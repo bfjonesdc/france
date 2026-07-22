@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>France Wildfire Monitor — EFFIS burnt areas</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --ash:#ECE7DD;--muted:#938C80;--smoke:#0E0D0C;--panel:rgba(17,16,14,.86);
+    --line:rgba(255,255,255,.10);--ember:#FF6A00;--ember-2:#FF8A2B;--ember-deep:#C43A00;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--smoke);color:var(--ash);font-family:"Space Grotesk",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+  #map{position:absolute;inset:0;height:100%;width:100%;background:#0b0a09;z-index:0}
+
+  .leaflet-fire-pane{
+    filter: grayscale(1) brightness(.45) sepia(1) saturate(9) hue-rotate(-8deg) brightness(1.5) contrast(1.05);
+    opacity:.62;mix-blend-mode:screen;
+  }
+  .leaflet-label-pane{opacity:.85}
+
+  .hud{position:absolute;top:16px;left:16px;z-index:1000;width:288px;max-width:calc(100vw - 32px);
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
+    box-shadow:0 18px 50px rgba(0,0,0,.5);overflow:hidden}
+  .hud__head{padding:15px 16px 13px;border-bottom:1px solid var(--line)}
+  .kicker{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+  h1{font-size:19px;font-weight:600;line-height:1.12;margin:0;letter-spacing:-.01em}
+  h1 .accent{color:var(--ember-2)}
+  .status{display:inline-flex;align-items:center;gap:7px;margin-top:11px;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ash)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ember)}
+  .status[data-mode="live"] .dot{animation:pulse 1.9s infinite}
+  .status[data-mode="archive"] .dot{background:var(--muted)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,106,0,.55)}70%{box-shadow:0 0 0 9px rgba(255,106,0,0)}100%{box-shadow:0 0 0 0 rgba(255,106,0,0)}}
+  .status .label{color:var(--muted)}
+
+  .hud__body{padding:14px 16px 16px}
+  .field{margin-bottom:15px}.field:last-child{margin-bottom:0}
+  .field > label{display:block;font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+
+  .years{display:flex;flex-wrap:wrap;gap:6px}
+  .yr{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ash);background:rgba(255,255,255,.04);border:1px solid var(--line);padding:6px 9px;border-radius:8px;cursor:pointer;transition:.14s}
+  .yr:hover{border-color:rgba(255,138,43,.5);color:#fff}
+  .yr[aria-pressed="true"]{background:var(--ember);border-color:var(--ember);color:#1b0d00;font-weight:600}
+
+  .range{display:flex;align-items:center;gap:11px}
+  input[type=range]{-webkit-appearance:none;appearance:none;flex:1;height:3px;border-radius:3px;background:linear-gradient(90deg,var(--ember-deep),var(--ember-2));outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid var(--ember);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid var(--ember);cursor:pointer}
+  .range output{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ash);min-width:38px;text-align:right}
+
+  .legend{display:flex;align-items:center;gap:10px;margin-top:3px}
+  .swatch{width:26px;height:14px;border-radius:3px;flex:none;background:linear-gradient(90deg,rgba(255,106,0,.35),rgba(255,106,0,.85));border:1px solid var(--ember-deep)}
+  .legend p{margin:0;font-size:12px;color:var(--ash);line-height:1.35}
+  .legend p span{color:var(--muted);font-size:11px}
+
+  .foot{margin-top:15px;padding-top:12px;border-top:1px solid var(--line);font-size:10.5px;line-height:1.5;color:var(--muted)}
+  .foot a{color:var(--ember-2);text-decoration:none}.foot a:hover{text-decoration:underline}
+
+  .coords{position:absolute;bottom:14px;left:16px;z-index:900;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted);background:rgba(14,13,12,.7);border:1px solid var(--line);padding:5px 10px;border-radius:7px;backdrop-filter:blur(6px);pointer-events:none}
+
+  .diag{position:absolute;top:16px;right:16px;z-index:1000;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ash);background:rgba(14,13,12,.82);border:1px solid var(--line);padding:6px 11px;border-radius:8px;backdrop-filter:blur(8px);max-width:52vw;transition:opacity .5s}
+  .diag b{color:var(--ember-2);font-weight:600}
+  .diag.err{border-color:var(--ember);color:#FFD3AD}
+
+  .leaflet-popup-content-wrapper{background:var(--panel);color:var(--ash);border:1px solid var(--line);border-radius:12px;backdrop-filter:blur(12px);box-shadow:0 12px 34px rgba(0,0,0,.5)}
+  .leaflet-popup-tip{background:var(--panel);border:1px solid var(--line)}
+  .leaflet-popup-content{margin:12px 14px;font-family:"Space Grotesk",sans-serif;font-size:13px}
+  .pop-title{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ember-2);margin:0 0 8px}
+  .pop table{border-collapse:collapse;width:100%}
+  .pop td{padding:2px 0;vertical-align:top;font-size:12.5px}
+  .pop td.k{color:var(--muted);padding-right:12px;white-space:nowrap;font-family:"IBM Plex Mono",monospace;font-size:11px}
+  .pop .empty{color:var(--muted);font-size:12.5px}
+  .leaflet-container a.leaflet-popup-close-button{color:var(--muted)}
+  .leaflet-control-attribution{background:rgba(14,13,12,.7)!important;color:var(--muted)!important;font-size:10px!important}
+  .leaflet-control-attribution a{color:var(--ember-2)!important}
+  .leaflet-bar a{background:#17140f;color:var(--ash);border-color:var(--line)}
+  .leaflet-bar a:hover{background:#211c15}
+
+  @media(max-width:520px){.hud{width:calc(100vw - 24px);top:12px;left:12px}.coords{display:none}.diag{top:auto;bottom:14px;right:12px;max-width:calc(100vw - 24px)}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="diag" id="diag">initializing…</div>
+
+<div class="hud">
+  <div class="hud__head">
+    <p class="kicker">Copernicus EMS · EFFIS</p>
+    <h1>France <span class="accent">Wildfire</span> Monitor</h1>
+    <div class="status" id="status" data-mode="live">
+      <span class="dot"></span><span id="statusText">Live season</span><span class="label" id="statusYear">2026</span>
+    </div>
+  </div>
+  <div class="hud__body">
+    <div class="field"><label>Fire season</label><div class="years" id="years"></div></div>
+    <div class="field"><label>Overlay opacity</label>
+      <div class="range"><input type="range" id="opacity" min="15" max="100" value="62" /><output id="opacityVal">62%</output></div>
+    </div>
+    <div class="field"><label>Legend</label>
+      <div class="legend"><span class="swatch"></span><p>Burnt area<br><span>Mapped wildfire perimeters, roughly 30 ha and larger</span></p></div>
+    </div>
+    <div class="foot">Tap any orange zone for fire details. Burnt-area data:
+      <a href="https://forest-fire.emergency.copernicus.eu/" target="_blank" rel="noopener">EFFIS / Copernicus EMS</a>. Basemap by CARTO &amp; OpenStreetMap.</div>
+  </div>
+</div>
+
+<div class="coords" id="coords">lat —, lon —</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  var diagEl = document.getElementById("diag");
+  function diag(msg, isErr){ diagEl.innerHTML = msg; diagEl.classList.toggle("err", !!isErr); diagEl.style.opacity="1"; }
+  function diagFade(){ diagEl.style.opacity="0"; }
+
+  if (typeof L === "undefined"){
+    diag("Map engine did not load. The viewer may be blocking cdnjs.", true);
+    return;
+  }
+
+  var EFFIS = "https://maps.effis.emergency.copernicus.eu/effis";
+  var now = new Date();
+  var CUR_YEAR = now.getFullYear();
+  var FIRST_YEAR = 2016;
+  function todayISO(){ return now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0")+"-"+String(now.getDate()).padStart(2,"0"); }
+
+  var map = L.map("map",{center:[46.6,2.45],zoom:6,minZoom:5,maxZoom:13,zoomControl:true,worldCopyJump:false});
+  map.setMaxBounds([[38.5,-11],[54,15]]);
+
+  // Panes: base < fire < labels
+  map.createPane("firePane"); map.getPane("firePane").classList.add("leaflet-fire-pane"); map.getPane("firePane").style.zIndex=350;
+  map.createPane("labelPane"); map.getPane("labelPane").classList.add("leaflet-label-pane"); map.getPane("labelPane").style.zIndex=450; map.getPane("labelPane").style.pointerEvents="none";
+
+  // Basemap with automatic fallback (no crossOrigin: not needed and can blank tiles)
+  var baseOk=false, baseFellBack=false, labelLayer=null;
+  var base = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",{
+    subdomains:"abcd", maxZoom:19,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  }).addTo(map);
+  base.on("load", function(){ if(!baseOk){ baseOk=true; diag("Map ready · <b>"+CUR_YEAR+"</b> season"); setTimeout(diagFade,2200); } });
+  base.on("tileerror", function(){
+    if(baseFellBack||baseOk) return; baseFellBack=true;
+    diag("Loading OpenStreetMap basemap…");
+    map.removeLayer(base);
+    if(labelLayer){ map.removeLayer(labelLayer); }
+    var osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
+    osm.on("load", function(){ diag("Map ready · <b>"+CUR_YEAR+"</b> season"); setTimeout(diagFade,2200); });
+    osm.on("tileerror", function(){ diag("Basemap tiles are being blocked by this viewer. Open the file in a browser to see the map.", true); });
+  });
+
+  labelLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",{subdomains:"abcd",maxZoom:19,pane:"labelPane"}).addTo(map);
+
+  // Fire overlay
+  var fireLayer=null, currentYear=CUR_YEAR, fireWarned=false;
+  function rasterLayerName(y){ return (y>=CUR_YEAR)?"modis.ba":("modis.ba."+y); }
+  function polyLayerName(y){ return (y>=CUR_YEAR)?"modis.ba.poly":("modis.ba.poly."+y); }
+  function buildFireLayer(y){
+    var o={layers:rasterLayerName(y),format:"image/png",transparent:true,version:"1.1.1",pane:"firePane",opacity:1,
+      attribution:'Burnt areas &copy; <a href="https://forest-fire.emergency.copernicus.eu/">EFFIS</a>'};
+    if(y>=CUR_YEAR){ o.TIME=y+"-01-01/"+todayISO(); }
+    var lyr=L.tileLayer.wms(EFFIS,o);
+    lyr.on("tileerror", function(){ if(!fireWarned){ fireWarned=true; console.warn("EFFIS tile error"); } });
+    return lyr;
+  }
+  function setYear(y){
+    currentYear=y; fireWarned=false;
+    if(fireLayer){ map.removeLayer(fireLayer); }
+    fireLayer=buildFireLayer(y).addTo(map);
+    document.querySelectorAll(".yr").forEach(function(b){ b.setAttribute("aria-pressed",String(Number(b.dataset.year)===y)); });
+    var st=document.getElementById("status"), live=(y>=CUR_YEAR);
+    st.dataset.mode=live?"live":"archive";
+    document.getElementById("statusText").textContent=live?"Live season":"Archived season";
+    document.getElementById("statusYear").textContent=y;
+    map.closePopup();
+  }
+
+  var yearsEl=document.getElementById("years");
+  for(var y=CUR_YEAR;y>=FIRST_YEAR;y--){(function(yr){
+    var b=document.createElement("button"); b.className="yr"; b.dataset.year=yr; b.textContent=yr; b.setAttribute("aria-pressed","false");
+    b.addEventListener("click",function(){ setYear(yr); }); yearsEl.appendChild(b);
+  })(y);}
+
+  var pane=map.getPane("firePane"), oi=document.getElementById("opacity"), ov=document.getElementById("opacityVal");
+  function applyOpacity(){ pane.style.opacity=Number(oi.value)/100; ov.textContent=oi.value+"%"; }
+  oi.addEventListener("input",applyOpacity); applyOpacity();
+
+  var coordsEl=document.getElementById("coords");
+  map.on("mousemove",function(e){ coordsEl.textContent="lat "+e.latlng.lat.toFixed(3)+", lon "+e.latlng.lng.toFixed(3); });
+
+  var PRETTY={id:"Fire ID",area_ha:"Area (ha)",area:"Area (ha)",place_name:"Place",commune:"Commune",province:"Province",country:"Country",countryful:"Country",firedate:"First detected",lastupdate:"Last update"};
+  function parseFeatureInfo(t){
+    var rows=[], re=/^\s*([A-Za-z0-9_]+)\s*[=:]\s*'?(.*?)'?\s*$/;
+    t.split(/\r?\n/).forEach(function(line){
+      var m=line.match(re); if(!m) return;
+      var k=m[1].toLowerCase(), v=(m[2]||"").trim();
+      if(!v||v==="null") return;
+      if(["layer","feature","geometry","the_geom","gml_id","shape"].indexOf(k)!==-1) return;
+      rows.push([k,v]);
+    });
+    return rows;
+  }
+  function renderPopup(rows,ll){
+    var html;
+    if(!rows.length){ html='<div class="pop"><p class="pop-title">Burnt area</p><p class="empty">No mapped fire recorded here for '+currentYear+'.</p></div>'; }
+    else{
+      var seen={}, body=rows.map(function(r){
+        if(seen[r[0]]) return ""; seen[r[0]]=1;
+        var label=PRETTY[r[0]]||(r[0].charAt(0).toUpperCase()+r[0].slice(1)), val=r[1];
+        if((r[0]==="area_ha"||r[0]==="area")&&!isNaN(parseFloat(val))) val=Math.round(parseFloat(val)).toLocaleString()+" ha";
+        return '<tr><td class="k">'+label+'</td><td>'+val+'</td></tr>';
+      }).join("");
+      html='<div class="pop"><p class="pop-title">Burnt area · '+currentYear+'</p><table>'+body+'</table></div>';
+    }
+    L.popup({maxWidth:280}).setLatLng(ll).setContent(html).openOn(map);
+  }
+  map.on("click",function(e){
+    var size=map.getSize(), pt=map.latLngToContainerPoint(e.latlng), b=map.getBounds();
+    var sw=map.options.crs.project(b.getSouthWest()), ne=map.options.crs.project(b.getNorthEast());
+    var p={SERVICE:"WMS",VERSION:"1.1.1",REQUEST:"GetFeatureInfo",LAYERS:polyLayerName(currentYear),QUERY_LAYERS:polyLayerName(currentYear),
+      STYLES:"",SRS:"EPSG:3857",BBOX:[sw.x,sw.y,ne.x,ne.y].join(","),WIDTH:size.x,HEIGHT:size.y,X:Math.round(pt.x),Y:Math.round(pt.y),INFO_FORMAT:"text/plain",FEATURE_COUNT:3};
+    if(currentYear>=CUR_YEAR){ p.TIME=currentYear+"-01-01/"+todayISO(); }
+    var url=EFFIS+"?"+Object.keys(p).map(function(k){return k+"="+encodeURIComponent(p[k]);}).join("&");
+    L.popup({maxWidth:280}).setLatLng(e.latlng).setContent('<div class="pop"><p class="pop-title">Querying EFFIS…</p></div>').openOn(map);
+    var done=false, timer=setTimeout(function(){ if(done)return; done=true; renderPopup([],e.latlng); },15000);
+    fetch(url).then(function(r){return r.text();}).then(function(txt){
+      if(done)return; done=true; clearTimeout(timer);
+      if(/ServiceException|<html/i.test(txt)){ renderPopup([],e.latlng); return; }
+      renderPopup(parseFeatureInfo(txt),e.latlng);
+    }).catch(function(){ if(done)return; done=true; clearTimeout(timer); renderPopup([],e.latlng); });
+  });
+
+  // Fix sizing inside iframes/webviews
+  function fix(){ map.invalidateSize(false); }
+  map.whenReady(fix);
+  setTimeout(fix,300); setTimeout(fix,1200);
+  window.addEventListener("resize",fix);
+  window.addEventListener("orientationchange",function(){ setTimeout(fix,300); });
+
+  setYear(CUR_YEAR);
+})();
+</script>
+</body>
+</html>
