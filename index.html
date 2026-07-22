@@ -26,7 +26,13 @@
     background:var(--panel);border:1px solid var(--line);border-radius:14px;
     backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
     box-shadow:0 18px 50px rgba(0,0,0,.5);overflow:hidden}
-  .hud__head{padding:15px 16px 13px;border-bottom:1px solid var(--line)}
+  .hud__head{position:relative;padding:15px 16px 13px;border-bottom:1px solid var(--line)}
+  .hud-toggle{position:absolute;top:12px;right:12px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+    font-family:"IBM Plex Mono",monospace;font-size:15px;line-height:1;color:var(--muted);
+    background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;cursor:pointer;transition:.14s}
+  .hud-toggle:hover{color:#fff;border-color:rgba(255,138,43,.5)}
+  .hud.collapsed .hud__head{border-bottom:none}
+  .hud.collapsed .hud__body{display:none}
   .kicker{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
   h1{font-size:19px;font-weight:600;line-height:1.12;margin:0;letter-spacing:-.01em}
   h1 .accent{color:var(--ember-2)}
@@ -90,13 +96,14 @@
 
 <div class="hud">
   <div class="hud__head">
+    <button class="hud-toggle" id="hudToggle" type="button" aria-expanded="true" aria-controls="hudBody" title="Hide panel">−</button>
     <p class="kicker">Copernicus EMS · EFFIS</p>
     <h1>France <span class="accent">Wildfire</span> Monitor</h1>
     <div class="status" id="status" data-mode="live">
       <span class="dot"></span><span id="statusText">Live season</span><span class="label" id="statusYear">2026</span>
     </div>
   </div>
-  <div class="hud__body">
+  <div class="hud__body" id="hudBody">
     <div class="field"><label>Fire season</label><div class="years" id="years"></div></div>
     <div class="field"><label>Overlay opacity</label>
       <div class="range"><input type="range" id="opacity" min="15" max="100" value="62" /><output id="opacityVal">62%</output></div>
@@ -130,8 +137,8 @@
   var FIRST_YEAR = 2016;
   function todayISO(){ return now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0")+"-"+String(now.getDate()).padStart(2,"0"); }
 
-  var map = L.map("map",{center:[46.6,2.45],zoom:6,minZoom:5,maxZoom:13,zoomControl:true,worldCopyJump:false});
-  map.setMaxBounds([[38.5,-11],[54,15]]);
+  var map = L.map("map",{center:[46.6,2.45],zoom:6,minZoom:3,maxZoom:18,zoomControl:true,worldCopyJump:true,
+    zoomSnap:0.25,zoomDelta:0.5,wheelPxPerZoomLevel:90});
 
   // Panes: base < fire < labels
   map.createPane("firePane"); map.getPane("firePane").classList.add("leaflet-fire-pane"); map.getPane("firePane").style.zIndex=350;
@@ -189,6 +196,14 @@
   var pane=map.getPane("firePane"), oi=document.getElementById("opacity"), ov=document.getElementById("opacityVal");
   function applyOpacity(){ pane.style.opacity=Number(oi.value)/100; ov.textContent=oi.value+"%"; }
   oi.addEventListener("input",applyOpacity); applyOpacity();
+
+  var hud=document.querySelector(".hud"), hudToggle=document.getElementById("hudToggle");
+  hudToggle.addEventListener("click",function(){
+    var collapsed=hud.classList.toggle("collapsed");
+    hudToggle.textContent=collapsed?"+":"−";
+    hudToggle.title=collapsed?"Show panel":"Hide panel";
+    hudToggle.setAttribute("aria-expanded",String(!collapsed));
+  });
 
   var coordsEl=document.getElementById("coords");
   map.on("mousemove",function(e){ coordsEl.textContent="lat "+e.latlng.lat.toFixed(3)+", lon "+e.latlng.lng.toFixed(3); });
