@@ -199,10 +199,62 @@
   }
   function sevFor(ha){ for(var i=0;i<SEV.length;i++){ if(ha>=SEV[i].min) return SEV[i]; } return SEV[SEV.length-1]; }
 
-  function wfsUrls(y){
-    var base=EFFIS+"?service=WFS&version=1.0.0&request=GetFeature&typename="+polyLayerName(y)+
-      "&srsName=EPSG:4326&bbox=-5.8,41.2,10.2,51.6&maxFeatures=2000&outputFormat=";
-    return [base+"geojson", base+encodeURIComponent("application/json; subtype=geojson")];
+  function normCoords(c){ // [x,y] in EPSG:4326 or Web Mercator meters -> LatLng
+    if(Math.abs(c[0])>180||Math.abs(c[1])>90){ return L.Projection.SphericalMercator.unproject(L.point(c[0],c[1])); }
+    return L.latLng(c[1],c[0]);
+  }
+  function firstCoord(g){ var c=g&&g.coordinates; while(Array.isArray(c)&&Array.isArray(c[0])){ c=c[0]; } return (Array.isArray(c)&&c.length>=2)?c:null; }
+  function inFrance(f){
+    var p=f.properties||{};
+    for(var k in p){ var lk=k.toLowerCase();
+      if(lk==="country"||lk==="countryful"){
+        var v=String(p[k]).toLowerCase();
+        if(v){ return v.indexOf("fr")===0; }
+      } }
+    var c=firstCoord(f.geometry); if(!c) return false;
+    var ll=normCoords(c);
+    return ll.lat>=41&&ll.lat<=52.2&&ll.lng>=-6.5&&ll.lng<=10.5;
+  }
+  // Accept plain FeatureCollections plus paginated REST shapes ({results:[...]})
+  function normalizeToFC(j){
+    if(!j) return null;
+    if(j.type==="FeatureCollection"&&Array.isArray(j.features)) return j;
+    var arr=Array.isArray(j.results)?j.results:(Array.isArray(j.objects)?j.objects:(Array.isArray(j)?j:null));
+    if(!arr) return null;
+    var feats=[];
+    arr.forEach(function(it){
+      if(!it) return;
+      if(it.type==="Feature"&&it.geometry){ feats.push(it); return; }
+      var g=it.geometry||it.geom||it.shape;
+      if(typeof g==="string"){ try{ g=JSON.parse(g); }catch(e){ g=null; } }
+      if(g&&g.type&&g.coordinates){
+        var props={}; for(var k in it){ if(k!=="geometry"&&k!=="geom"&&k!=="shape") props[k]=it[k]; }
+        feats.push({type:"Feature",geometry:g,properties:props});
+      }
+    });
+    return feats.length?{type:"FeatureCollection",features:feats}:null;
+  }
+  function fireSources(y){
+    // Lead with WFS on the same MapServer host the click-query already uses
+    // (known reachable from the browser). WFS 1.0.0 keeps lon/lat axis order,
+    // avoiding the 1.1.0 EPSG:4326 lat/lon gotcha. Try a few output-format and
+    // bbox spellings; the loader takes the first that yields real features.
+    var tn=polyLayerName(y), urls=[];
+    var timeQ = (y>=CUR_YEAR) ? ("&TIME="+encodeURIComponent(y+"-01-01/"+todayISO())) : "";
+    var box110="&srsName=EPSG:4326&bbox="+encodeURIComponent("-5.8,41.2,10.2,51.6,EPSG:4326");
+    ["geojson","json","application/json; subtype=geojson"].forEach(function(fmt){
+      urls.push(EFFIS+"?service=WFS&version=1.0.0&request=GetFeature&typename="+encodeURIComponent(tn)+
+        "&srsName=EPSG:4326&outputFormat="+encodeURIComponent(fmt)+"&maxFeatures=3000"+timeQ);
+    });
+    urls.push(EFFIS+"?service=WFS&version=1.1.0&request=GetFeature&typename="+encodeURIComponent(tn)+
+      box110+"&outputFormat=geojson&maxFeatures=3000"+timeQ);
+    urls.push(EFFIS+"?service=WFS&version=2.0.0&request=GetFeature&typenames="+encodeURIComponent(tn)+
+      "&srsName=EPSG:4326&outputFormat=geojson&count=3000"+timeQ);
+    // Cross-host REST API as a last resort (CORS support not guaranteed)
+    var API="https://api2.effis.emergency.copernicus.eu/rest/2/burntareas/";
+    if(y>=CUR_YEAR){ urls.push(API+"current/?country=FR&format=json&limit=3000"); }
+    else{ urls.push(API+"?country=FR&year="+y+"&format=json&limit=3000"); }
+    return urls;
   }
 
   var vectorLayer=null, vectorMode=false, loadSeq=0;
@@ -222,11 +274,19 @@
     rows.unshift(["severity",'<span style="color:'+s.color+';font-weight:600">'+s.label+"</span>"]);
     renderPopup(rows,ll);
   }
-  function showVector(y,gj){
+  // Returns feature count drawn (0 if nothing usable), so the loader can decide
+  // whether to keep the raster overlay up.
+  function showVector(y,fc){
+    var feats=(fc.features||[]).filter(function(f){ return f&&f.geometry&&f.geometry.coordinates; });
+    var inFR=feats.filter(inFrance);
+    if(inFR.length) feats=inFR; // prefer France-only when we can tell; else draw all returned
+    if(!feats.length) return 0;
     // Draw big fires first so small ones stay clickable on top
-    var feats=(gj.features||[]).slice().sort(function(a,b){ return areaOf(b)-areaOf(a); });
+    feats.sort(function(a,b){ return areaOf(b)-areaOf(a); });
+    if(vectorLayer){ map.removeLayer(vectorLayer); vectorLayer=null; }
     vectorLayer=L.geoJSON({type:"FeatureCollection",features:feats},{
       pane:"vectorPane",
+      coordsToLatLng:normCoords, // auto-handle EPSG:4326 or Web Mercator meters
       style:function(f){ var s=sevFor(areaOf(f)); return {color:s.color,weight:1.1,opacity:.9,fillColor:s.color,fillOpacity:.5}; },
       onEachFeature:function(f,lyr){
         lyr.on("mouseover",function(){ lyr.setStyle({weight:2.4,fillOpacity:.72}); });
@@ -234,30 +294,38 @@
         lyr.on("click",function(ev){ renderVectorPopup(f,ev.latlng); });
       }
     }).addTo(map);
-    vectorMode=true;
-    diag("<b>"+feats.length+"</b> mapped fires · "+y+" season, colored by burnt area");
-    setTimeout(diagFade,3200);
+    return feats.length;
   }
   function loadFires(y){
     var seq=++loadSeq;
     clearFires(); vectorMode=false; map.closePopup();
+    // Show the raster overlay right away so fires are ALWAYS visible, then try
+    // to upgrade it to the severity-colored vector layer.
+    fireWarned=false;
+    fireLayer=buildFireLayer(y).addTo(map);
     diag("Loading "+y+" fires…");
-    var urls=wfsUrls(y);
+    var urls=fireSources(y);
     (function attempt(i){
       if(seq!==loadSeq) return;
       if(i>=urls.length){
-        fireWarned=false;
-        fireLayer=buildFireLayer(y).addTo(map);
-        diag("Severity colors unavailable — showing standard overlay", true);
+        diag("Showing standard overlay · severity colors unavailable for "+y, true);
         setTimeout(diagFade,4500);
         return;
       }
-      var done=false, timer=setTimeout(function(){ if(done)return; done=true; attempt(i+1); },20000);
-      fetch(urls[i]).then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); }).then(function(gj){
+      var done=false, timer=setTimeout(function(){ if(done)return; done=true; attempt(i+1); },18000);
+      fetch(urls[i]).then(function(r){ if(!r.ok) throw new Error(r.status); return r.text(); }).then(function(txt){
         if(done||seq!==loadSeq){ done=true; return; }
         done=true; clearTimeout(timer);
-        if(!gj||gj.type!=="FeatureCollection"||!gj.features){ attempt(i+1); return; }
-        showVector(y,gj);
+        if(/ServiceException|ExceptionReport|<\?xml|<html/i.test(txt.slice(0,400))){ attempt(i+1); return; }
+        var j; try{ j=JSON.parse(txt); }catch(e){ attempt(i+1); return; }
+        var fc=normalizeToFC(j);
+        if(!fc){ attempt(i+1); return; }
+        var n=showVector(y,fc);
+        if(!n){ attempt(i+1); return; } // empty result: keep trying / keep raster
+        if(fireLayer){ map.removeLayer(fireLayer); fireLayer=null; } // vectors won: drop raster
+        vectorMode=true;
+        diag("<b>"+n+"</b> mapped fires · "+y+", colored by burnt area");
+        setTimeout(diagFade,3200);
       }).catch(function(){
         if(done||seq!==loadSeq) return;
         done=true; clearTimeout(timer); attempt(i+1);
@@ -308,6 +376,13 @@
     });
     return rows;
   }
+  function withSeverity(rows){
+    var ha=NaN;
+    rows.forEach(function(r){ if((r[0]==="area_ha"||r[0]==="area")&&isNaN(ha)){ var v=parseFloat(r[1]); if(!isNaN(v)) ha=v; } });
+    if(isNaN(ha)) return rows;
+    var s=sevFor(ha);
+    return [["severity",'<span style="color:'+s.color+';font-weight:600">'+s.label+"</span>"]].concat(rows);
+  }
   function renderPopup(rows,ll){
     var html;
     if(!rows.length){ html='<div class="pop"><p class="pop-title">Burnt area</p><p class="empty">No mapped fire recorded here for '+currentYear+'.</p></div>'; }
@@ -335,7 +410,7 @@
     fetch(url).then(function(r){return r.text();}).then(function(txt){
       if(done)return; done=true; clearTimeout(timer);
       if(/ServiceException|<html/i.test(txt)){ renderPopup([],e.latlng); return; }
-      renderPopup(parseFeatureInfo(txt),e.latlng);
+      renderPopup(withSeverity(parseFeatureInfo(txt)),e.latlng);
     }).catch(function(){ if(done)return; done=true; clearTimeout(timer); renderPopup([],e.latlng); });
   });
 
