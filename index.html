@@ -111,10 +111,10 @@
     </div>
     <div class="field"><label>Severity · burnt area</label>
       <div class="sev-legend">
-        <div class="sev-row"><span class="sev-swatch" style="background:#FFC53D"></span><p>Moderate <span>&lt; 100 ha</span></p></div>
-        <div class="sev-row"><span class="sev-swatch" style="background:#FF8A2B"></span><p>Significant <span>100 – 500 ha</span></p></div>
-        <div class="sev-row"><span class="sev-swatch" style="background:#FF5A00"></span><p>Severe <span>500 – 2,000 ha</span></p></div>
-        <div class="sev-row"><span class="sev-swatch" style="background:#E8250C"></span><p>Extreme <span>&ge; 2,000 ha</span></p></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#FFE01B"></span><p>Moderate <span>&lt; 100 ha</span></p></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#FF9500"></span><p>Significant <span>100 – 500 ha</span></p></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#F51D0C"></span><p>Severe <span>500 – 2,000 ha</span></p></div>
+        <div class="sev-row"><span class="sev-swatch" style="background:#B026C9"></span><p>Extreme <span>&ge; 2,000 ha</span></p></div>
       </div>
     </div>
     <div class="foot">Tap any fire zone for details. Burnt-area data:
@@ -186,10 +186,10 @@
   map.createPane("vectorPane"); map.getPane("vectorPane").style.zIndex=360;
 
   var SEV=[
-    {min:2000,color:"#E8250C",label:"Extreme"},
-    {min:500, color:"#FF5A00",label:"Severe"},
-    {min:100, color:"#FF8A2B",label:"Significant"},
-    {min:0,   color:"#FFC53D",label:"Moderate"}
+    {min:2000,color:"#B026C9",label:"Extreme"},
+    {min:500, color:"#F51D0C",label:"Severe"},
+    {min:100, color:"#FF9500",label:"Significant"},
+    {min:0,   color:"#FFE01B",label:"Moderate"}
   ];
   function areaOf(f){
     var p=f.properties||{};
@@ -397,21 +397,45 @@
     }
     L.popup({maxWidth:280}).setLatLng(ll).setContent(html).openOn(map);
   }
-  map.on("click",function(e){
-    if(vectorMode) return; // polygons handle their own clicks in severity mode
-    var size=map.getSize(), pt=map.latLngToContainerPoint(e.latlng), b=map.getBounds();
+  function infoUrlAt(x,y){
+    var size=map.getSize(), b=map.getBounds();
     var sw=map.options.crs.project(b.getSouthWest()), ne=map.options.crs.project(b.getNorthEast());
     var p={SERVICE:"WMS",VERSION:"1.1.1",REQUEST:"GetFeatureInfo",LAYERS:polyLayerName(currentYear),QUERY_LAYERS:polyLayerName(currentYear),
-      STYLES:"",SRS:"EPSG:3857",BBOX:[sw.x,sw.y,ne.x,ne.y].join(","),WIDTH:size.x,HEIGHT:size.y,X:Math.round(pt.x),Y:Math.round(pt.y),INFO_FORMAT:"text/plain",FEATURE_COUNT:3};
+      STYLES:"",SRS:"EPSG:3857",BBOX:[sw.x,sw.y,ne.x,ne.y].join(","),WIDTH:size.x,HEIGHT:size.y,
+      X:Math.max(0,Math.min(size.x-1,Math.round(x))),Y:Math.max(0,Math.min(size.y-1,Math.round(y))),INFO_FORMAT:"text/plain",FEATURE_COUNT:5};
     if(currentYear>=CUR_YEAR){ p.TIME=currentYear+"-01-01/"+todayISO(); }
-    var url=EFFIS+"?"+Object.keys(p).map(function(k){return k+"="+encodeURIComponent(p[k]);}).join("&");
+    return EFFIS+"?"+Object.keys(p).map(function(k){return k+"="+encodeURIComponent(p[k]);}).join("&");
+  }
+  function queryAt(x,y){
+    return fetch(infoUrlAt(x,y)).then(function(r){return r.text();}).then(function(txt){
+      if(/ServiceException|ExceptionReport|<html/i.test(txt)) return null;
+      var rows=parseFeatureInfo(txt);
+      return rows.length?rows:null;
+    }).catch(function(){ return null; });
+  }
+  map.on("click",function(e){
+    if(vectorMode) return; // polygons handle their own clicks in severity mode
+    var pt=map.latLngToContainerPoint(e.latlng);
     L.popup({maxWidth:280}).setLatLng(e.latlng).setContent('<div class="pop"><p class="pop-title">Querying EFFIS…</p></div>').openOn(map);
+    // Sample the exact pixel first, then widening rings, so a fire you can see
+    // but just missed by a pixel or two still registers.
+    var rings=[[0,0]], R=[6,12,20];
+    R.forEach(function(rad){ for(var a=0;a<8;a++){ var ang=a*Math.PI/4; rings.push([Math.cos(ang)*rad,Math.sin(ang)*rad]); } });
     var done=false, timer=setTimeout(function(){ if(done)return; done=true; renderPopup([],e.latlng); },15000);
-    fetch(url).then(function(r){return r.text();}).then(function(txt){
-      if(done)return; done=true; clearTimeout(timer);
-      if(/ServiceException|<html/i.test(txt)){ renderPopup([],e.latlng); return; }
-      renderPopup(withSeverity(parseFeatureInfo(txt)),e.latlng);
-    }).catch(function(){ if(done)return; done=true; clearTimeout(timer); renderPopup([],e.latlng); });
+    function finish(rows){ if(done)return; done=true; clearTimeout(timer); renderPopup(withSeverity(rows),e.latlng); }
+    // Try center synchronously; if empty, race the surrounding samples.
+    queryAt(pt.x,pt.y).then(function(rows){
+      if(done)return;
+      if(rows){ finish(rows); return; }
+      var pending=rings.length-1, hit=false;
+      rings.slice(1).forEach(function(o){
+        queryAt(pt.x+o[0],pt.y+o[1]).then(function(r){
+          if(done||hit)return;
+          if(r){ hit=true; finish(r); return; }
+          if(--pending<=0 && !hit && !done){ done=true; clearTimeout(timer); renderPopup([],e.latlng); }
+        });
+      });
+    });
   });
 
   // Fix sizing inside iframes/webviews
